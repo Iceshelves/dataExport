@@ -1,0 +1,41 @@
+/* --------
+Quick script to inquire the tileNumber, within a predefined tile grid, for a specific location.
+
+This file runs in the google earth engine:
+https://code.earthengine.google.com/8fa8da872b6c56c06e1d6d971794196c
+
+Author: M. Izeboud, 01/2021
+-----------*/
+
+// Load tile grid
+var gridTiles_iceShelves = ee.FeatureCollection('projects/ee-izeboudmaaike/assets/gridTiles_iceShelves')
+
+
+// Pinpoint location of interest:
+// Indicate a location by one of the following:
+//    - adding a new marker on the map; it will show in the 'import' section
+//    - moving the currently shown one
+//    - defining the lon,lat below as ee.Geometry.Point()
+
+var exampleMarker =
+    /* color: #0b4a8b */
+    /* locked: false */
+    ee.Geometry.Point([-100.72772623389818, -75.28633179057236]);
+Map.addLayer(exampleMarker)
+
+// -- uncomment the next line if you've created a new geometry through 'import'.
+var geometry = exampleMarker;
+
+// Find the tile number you are looking for, if you want to look at a specific location
+var tileOfInterest = gridTiles_iceShelves.filterBounds(geometry);
+
+print('Tile(s) on selected point: ' , tileOfInterest)
+print('Selected tile(s) number:', tileOfInterest.aggregate_array('tileNumber'))
+
+
+// ---- Visualise tile collection
+
+Map.addLayer(gridTiles_iceShelves,{'color':'green'},'Exported tiles')
+Map.addLayer(tileOfInterest , {'color':'red'},'Selected tile')
+// Map.centerObject(tileOfInterest)
+Map.setCenter(0,-75,2)
