@@ -1,0 +1,229 @@
+/* --------------------------------
+
+File to run in the Google Earth Engine
+
+This script creates a mosaic of satellite imagery for a given timeframe over the Antarctic
+A regular grid is defined that covers the Antarctic, all tiles that cover the ice shelves are exported as GeoTiff.
+The grid/tile dimensions are defined such that they depend on the allowed exported file size (Mb)
+
+Author: Maaike Izeboud
+20/01/2021
+
+-------------------------------- */
+
+// Load libraries
+var S2  = require('users/earthmapps/public:methods/S2.js')
+var bbox  = require('users/earthmapps/public:bbox.js')
+var iceShelves = ee.FeatureCollection('users/izeboudmaaike/ne_10m_antarctic_ice_shelves_polys')
+
+
+/* --------------------------------
+
+TILE DIMENSIONS: for square tiles, where width=height (in # pixels):
+  imSize = xpixels * ypixels * Nbnds * bitsPerPixel / 8 (divide by 8 to convert bit to bye)
+  dx = sqrt( imSize / (Nbnds * bitsPerPixel)
+
+-------------------------------- */
+
+// Export info
+var bitPerPixel = 16; // data type 'unsigned int16'
+var bnds = ['B4_first','B3_first','B2_first','B11_first']; //bands to export: RGB & SWIR
+var Nbnds = 4;
+
+// Choose maximum intended image file size.
+var imSize = 1000e6; // yields files of approx 730-930 Mb. Export time ~20min per image
+var imSize = imSize/10; // Mysterious factor 10 correction
+
+var dx = Math.sqrt( imSize / (Nbnds*bitPerPixel)) ; // width in PIXELS.
+var dy = dx;
+// print('px width will be approx ', dx )
+
+/* --------------------------------
+
+create regular tiles from gridpoints
+
+-------------------------------- */
+
+// Create list of x,y grid points (values for polar stereographic projection)
+var coordmin = -4e6;//-4e6;
+var coordmax = 4e6;//4e6;
+var stride = dx * 100; // (why *100?)
+
+var xs = ee.List.sequence(coordmin,coordmax,stride)
+var ys = ee.List.sequence(coordmin,coordmax,stride)
+
+// Create grid tiles that cover the Antarctic
+var gridTiles_list = xs.map(function(x){
+  var tile = ys.map(function(y){
+    var cornerpoint= ee.Geometry.Point([x, y],'EPSG:3031');
+    var geometry = bbox.bbox(cornerpoint,{width:dx,height:dy,xres:1})
+    return ee.Feature(geometry)
+
+  })
+  return tile
+})
+
+// Flatten the output (nested list of features) to a singel level featurecollection, and filter by ice shelf region (polygons)
+var gridTiles_iShlf = ee.FeatureCollection(gridTiles_list.flatten()).filterBounds(iceShelves);
+
+
+/* --------------------------------
+
+Select regions to batch export
+(to prevent overload of browser)
+
+Regions are:
+  - WAIS: West Antarcic Ice Sheet
+  - AP: Antarctic Peninsula
+  - DML: Dronning Maud Land
+  - EAIS: East Antarctic Ice Sheet
+  - FRIS: Filchner-Ronne Ice Shelf
+  - ROSS: Ross Ice Shelf
+-------------------------------- */
+
+var WAIS = ee.Geometry.Polygon(
+        [[[-151.37443773188065, -70.34533652073362],
+          [-151.37443773188065, -77.67222997242548],
+          [-85.28068773188066, -77.67222997242548],
+          [-85.28068773188066, -70.34533652073362]]], null, false),
+    AP = ee.Geometry.Polygon(
+        [[[-87.74162523188066, -63.03101990208364],
+          [-87.74162523188066, -75.90734597752947],
+          [-51.882250231880654, -75.90734597752947],
+          [-51.882250231880654, -63.03101990208364]]], null, false),
+    DML = ee.Geometry.Polygon(
+        [[[-30.085375231880658, -65.4728283432761],
+          [-30.085375231880658, -76.41189076610509],
+          [62.72712476811934, -76.41189076610509],
+          [62.72712476811934, -65.4728283432761]]], null, false),
+    EAIS = ee.Geometry.Polygon(
+        [[[62.72712476811934, -63.817377027702484],
+          [62.72712476811934, -76.7383641227472],
+          [173.82087476811932, -76.7383641227472],
+          [173.82087476811932, -63.817377027702484]]], null, false),
+    FRIS = ee.Geometry.Polygon(
+        [[[-88.97184751025543, -74.610987953722],
+          [-88.97184751025543, -83.95056411216885],
+          [-20.06559751025543, -83.95056411216885],
+          [-20.06559751025543, -74.610987953722]]], null, false),
+    ROSS = ee.Geometry.Polygon(
+        [[[155.29879427723506, -76.65333790828734],
+          [155.29879427723506, -85.1016332675356],
+          [219.28316927723503, -85.1016332675356],
+          [219.28316927723503, -76.65333790828734]]], null, false)
+
+// Choose a region to batch the export for by uncommenting
+
+// var imin = 0;
+// var gridTiles = gridTiles_iShlf.filterBounds(WAIS) // DONE, N = 37
+
+// var imin = 37; // N images I've already exported
+// var gridTiles = gridTiles_iShlf.filterBounds(AP) // DONE, N = 50
+
+// var imin = 87; // N images I've already exported
+// var gridTiles = gridTiles_iShlf.filterBounds(FRIS) // DONE, N = 64
+
+// var imin = 151;
+// var gridTiles = gridTiles_iShlf.filterBounds(DML) // DONE, N=62;
+
+// var imin = 213;
+// var gridTiles = gridTiles_iShlf.filterBounds(EAIS) // DONE, N = 71;
+
+// var imin = 284;
+// var gridTiles = gridTiles_iShlf.filterBounds(ROSS) // DONE, N = 57
+
+print('Number of Tiles: ', gridTiles.size())
+
+
+/* --------------------------------
+
+Get Sentinel-2 Mosaic for all tiles, export per tile
+
+-------------------------------- */
+
+// Define start & end dates
+var start = '2019-11-1'
+var end = '2020-3-1'
+
+
+// Load collection & apply standard metadata filtes
+var col = ee.ImageCollection("COPERNICUS/S2_SR")
+            .filterBounds(gridTiles) // filter by tile collection
+            .filterDate(start,end) // Filter by date
+            .filterMetadata('CLOUDY_PIXEL_PERCENTAGE','less_than',30) // Filter by metadata to get most cloudy scenes out
+            .sort('CLOUDY_PIXEL_PERCENTAGE',true) // Sort by cloudy pixel percentage to get the least cloudy images first
+
+// Apply pixel based cloud masking to remove (known) remaining clouds
+var col2 = col.map(S2.maskClouds)
+
+
+
+/* --------------------------------
+
+Visualise
+
+-------------------------------- */
+
+
+// // Visualise tiles
+
+// Map.addLayer(iceShelves,{'color':'yellow'},'ice shelve polygons')
+// Map.addLayer(gridTiles_iShlf,{'color':'green'},'grid all ice Shelves')
+// Map.addLayer(gridTiles,{'color':'red'},'grid region filter')
+
+// // Visualize mosaic
+
+// // Map.addLayer(col2.reduce(ee.Reducer.firstNonNull()),{bands:['B4_first','B3_first','B2_first'],min:0,max:10000},'Least cloudy image')
+
+
+/* --------------------------------
+
+Export
+
+-------------------------------- */
+
+// flatten image collection to one image, composite of first least-cloudy images
+var output = col2.reduce(ee.Reducer.firstNonNull()).select(bnds) //
+
+var scale = 10
+var epsg = 'EPSG:3031'
+var bucket = 'ee-data_export'
+var filename_prefix = 'S2_composite_' + start + '_' + end;
+var gridTiles_cs = gridTiles.getInfo()["features"]; // get feature collection to client side to be able to loop tiles
+
+
+/* --- EXPORT IN A LOOP OVER ALL TILES --- */
+
+var n = gridTiles.size().getInfo(); // number of tiles to export
+
+for (var i = 0; i < n; i++) {
+
+  // var tile = ee.Feature(gridTiles_cs[i]).geometry(); // server side geometry
+  var tile = gridTiles_cs[0].geometry // client side geometry
+  var ifile = imin+i;
+
+  var filename_suffix = '_tile_' + ifile; // number exported tiles
+
+  Export.image.toCloudStorage({
+      image:output,
+      bucket:bucket,
+      description: filename_prefix + filename_suffix,
+      region:tile,
+      scale:scale,
+      crs:epsg,
+      maxPixels:1e9
+  })
+
+  // Export to Asset (optional):
+
+  // Export.image.toAsset({
+  //     image: output,
+  //     description: filename_prefix + filename_suffix,
+  //     assetId: filename_prefix + filename_suffix,
+  //     scale: scale,
+  //     region: tile,
+  //     crs:epsg,
+  //     maxPixels:1e9
+  // })
+
+}
